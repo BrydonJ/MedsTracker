@@ -7,8 +7,9 @@ use chrono::Days;
 use leptos::leptos_dom::helpers::set_timeout;
 use leptos::prelude::*;
 use meds_core::{
-    compartment_pieces, finish_packing, next_week, order_reason, pack_step, pack_steps, set_packed,
-    short_for_week, start_packing, week_plan, OrderState, PackLine, Slot, EVERY_DAY,
+    choose_days, compartment_pieces, finish_packing, fit_to_stock, next_week, order_reason, pack_step,
+    pack_steps, set_packed, short_for_week, start_packing, week_need, week_plan, OrderState, PackLine,
+    Medicine, Slot, EVERY_DAY,
 };
 
 use crate::ui::{Icon, PillDot};
@@ -152,6 +153,7 @@ fn StartWeek() -> impl IntoView {
                 <Icon name="alert"/>
                 <div>
                     <strong>"Not enough for a full week"</strong>
+                    <p>"Choose which days to pack on its card, or add a delivery that came in."</p>
                     <ul>
                         {move || {
                             short
@@ -167,6 +169,10 @@ fn StartWeek() -> impl IntoView {
                                 .collect_view()
                         }}
                     </ul>
+                    <button class="btn small" on:click=move |_| app.topup.set(true)>
+                        <Icon name="box"/>
+                        "Add a delivery"
+                    </button>
                 </div>
             </div>
         </Show>
@@ -534,120 +540,188 @@ fn row_dose(line: &PackLine, row: Slot) -> (u32, u8) {
     (per, mask)
 }
 
-/// The medicine to put in right now, with everything needed to do it.
+/// Everything a step card shows, worked out from the saved data.
+#[derive(Clone, PartialEq)]
+struct StepInfo {
+    med: Medicine,
+    /// This row's step on this week's days.
+    line: PackLine,
+    /// This week's days, `[morning, night]`.
+    days: [u8; 2],
+    /// Tablets both rows need from the box this week.
+    need: u32,
+    /// The days the box covers, for "Fit to stock".
+    fit: u8,
+    other_done: bool,
+}
+
+impl StepInfo {
+    fn short(&self) -> bool {
+        self.med.stock.is_some_and(|s| self.need > s)
+    }
+}
+
+/// The medicine to put in right now, with everything needed to do it. The card itself
+/// stays put while its parts update, so choosing days doesn't replay its entry animation
+/// or lose focus.
 #[component]
 fn StepCard(id: u32, row: Slot) -> impl IntoView {
     let app = use_app();
-    let med = Memo::new(move |_| app.data.with(|d| d.med(id).cloned()));
-    let other_done = Memo::new(move |_| app.data.with(|d| d.row_done(id, row.other())));
+    let info = Memo::new(move |_| {
+        app.data.with(|d| {
+            d.med(id).map(|m| {
+                let days = d.week_days(m);
+                let other_done = d.row_done(id, row.other());
+                StepInfo {
+                    line: pack_step(m, days, row, other_done).line,
+                    need: week_need(d, m),
+                    fit: fit_to_stock(d, m, row),
+                    med: m.clone(),
+                    days,
+                    other_done,
+                }
+            })
+        })
+    });
+    // Short, or already narrowed down (so the days can be put back after a delivery).
+    let picking = Memo::new(move |_| {
+        info.with(|i| {
+            i.as_ref()
+                .is_some_and(|i| i.short() || i.days[row.index()] != i.med.days & EVERY_DAY)
+        })
+    });
+    let head = Memo::new(move |_| {
+        info.with(|i| i.as_ref().map(|i| (i.med.colour, i.med.name.clone(), i.med.strength.clone(), i.med.note.clone())))
+    });
     let leaving = RwSignal::new(false);
+    let icon = if row == Slot::Morning { "sun" } else { "moon" };
 
-    view! {
-        {move || {
-            let Some(m) = med.get() else {
-                return ().into_any();
-            };
-            let l = pack_step(&m, row, other_done.get()).line;
-            let week = PackLine::for_med(&m);
-            let (per, mask) = row_dose(&l, row);
-            let daily = mask == EVERY_DAY;
+    let dose = move || {
+        info.with(|i| {
+            let i = i.as_ref()?;
+            let (per, mask) = row_dose(&i.line, row);
             let unit = if per <= 2 { "tablet" } else { "tablets" };
-            let caption = if daily {
+            let caption = if per == 0 {
+                "No days chosen this week".to_string()
+            } else if mask == EVERY_DAY {
                 format!("{unit} in every compartment")
             } else {
                 format!("{unit} · {}", fmt::days(mask))
             };
-            let strip = (!daily).then(|| view! { <DayStrip line=l.clone() row=row/> });
-            let halves = (l.cut > 0 || l.use_spare > 0)
-                .then(|| {
-                    let mut parts = Vec::new();
-                    if l.use_spare > 0 {
-                        parts.push(format!("use {} you already have", fmt::plural(l.use_spare, "spare half", "spare halves")));
-                    }
-                    if l.cut > 0 {
-                        parts.push(format!("cut {} in half", fmt::plural(l.cut, "tablet", "tablets")));
-                    }
-                    if l.spare_after > 0 {
-                        // An odd number of halves in the other row, still to pack, uses it up.
-                        let other = row.other();
-                        let when = if m.dose_halves(other) % 2 == 1 && !other_done.get() {
-                            format!("the {} row", other.label().to_lowercase())
-                        } else {
-                            "next week".to_string()
-                        };
-                        parts.push(format!("keep {} for {when}", fmt::plural(l.spare_after, "half", "halves")));
-                    }
-                    let mut text = parts.join(", ");
-                    if let Some(c) = text.get_mut(0..1) {
-                        c.make_ascii_uppercase();
-                    }
-                    view! {
-                        <p class="pc-cut">
-                            <Icon name="scissors"/>
-                            {text}
-                        </p>
-                    }
-                });
-            let stock = m
-                .stock
-                .map(|s| {
-                    if week.take > s {
-                        view! {
-                            <p class="pc-stock bad">
-                                <Icon name="alert"/>
-                                {format!("Only {s} in the box, {} short this week", week.take - s)}
-                            </p>
-                        }
-                            .into_any()
-                    } else {
-                        let take = match l.take {
-                            0 => "Nothing new from the box".to_string(),
-                            n => format!("Take {n} from the box"),
-                        };
-                        view! {
-                            <p class="pc-stock">
-                                <Icon name="box"/>
-                                {format!("{take} · {} left after this week", s - week.take)}
-                            </p>
-                        }
-                            .into_any()
-                    }
-                });
-            let note = (!m.note.trim().is_empty()).then(|| view! { <p class="pc-note">{m.note.clone()}</p> });
-            let icon = if row == Slot::Morning { "sun" } else { "moon" };
-            view! {
-                <article class="pack-card" class:leaving=move || leaving.get()>
-                    <div class="pc-top">
-                        <PillDot colour=m.colour/>
-                        <h3 class="pc-name">
-                            {m.name.clone()}
-                            <span class="pc-strength">{m.strength.clone()}</span>
-                        </h3>
-                        <FlagChip id=id/>
-                    </div>
-                    <div class="step-dose" class:night={row == Slot::Night}>
-                        <span class="sd-row">
-                            <Icon name=icon/>
-                            {format!("{} row", row.label())}
-                        </span>
-                        <span class="sd-amount">
-                            <strong>{fmt::halves(per)}</strong>
-                            <span>{caption}</span>
-                        </span>
-                    </div>
-                    {strip}
-                    {halves}
-                    // The button comes before stock and notes so it stays in reach on small phones.
-                    <button class="btn big primary pack-btn" on:click=move |_| pack_later(app, id, row, leaving)>
-                        <Icon name="check"/>
-                        "Packed"
-                    </button>
-                    {stock}
-                    {note}
-                </article>
+            let amount = if per == 0 { "–".to_string() } else { fmt::halves(per) };
+            Some(view! {
+                <strong>{amount}</strong>
+                <span>{caption}</span>
+            })
+        })
+    };
+    let strip = move || {
+        if picking.get() {
+            return view! { <DayPicker id=id row=row info=info/> }.into_any();
+        }
+        info.with(|i| {
+            i.as_ref()
+                .filter(|i| row_dose(&i.line, row).1 != EVERY_DAY)
+                .map(|i| view! { <DayStrip line=i.line.clone() row=row/> })
+        })
+        .into_any()
+    };
+    let halves = move || {
+        info.with(|i| {
+            let i = i.as_ref()?;
+            let l = &i.line;
+            if l.cut == 0 && l.use_spare == 0 {
+                return None;
             }
-                .into_any()
-        }}
+            let mut parts = Vec::new();
+            if l.use_spare > 0 {
+                parts.push(format!("use {} you already have", fmt::plural(l.use_spare, "spare half", "spare halves")));
+            }
+            if l.cut > 0 {
+                parts.push(format!("cut {} in half", fmt::plural(l.cut, "tablet", "tablets")));
+            }
+            if l.spare_after > 0 {
+                // An odd number of halves in the other row, still to pack, uses it up.
+                let other = row.other();
+                let other_takes = i.med.dose_halves(other) % 2 == 1 && i.days[other.index()] != 0;
+                let when = if other_takes && !i.other_done {
+                    format!("the {} row", other.label().to_lowercase())
+                } else {
+                    "next week".to_string()
+                };
+                parts.push(format!("keep {} for {when}", fmt::plural(l.spare_after, "half", "halves")));
+            }
+            let mut text = parts.join(", ");
+            if let Some(c) = text.get_mut(0..1) {
+                c.make_ascii_uppercase();
+            }
+            Some(view! {
+                <p class="pc-cut">
+                    <Icon name="scissors"/>
+                    {text}
+                </p>
+            })
+        })
+    };
+    // When short, the day picker says so instead.
+    let stock = move || {
+        info.with(|i| {
+            let i = i.as_ref().filter(|i| !i.short())?;
+            let s = i.med.stock?;
+            let take = match i.line.take {
+                0 => "Nothing new from the box".to_string(),
+                n => format!("Take {n} from the box"),
+            };
+            Some(view! {
+                <p class="pc-stock">
+                    <Icon name="box"/>
+                    {format!("{take} · {} left after this week", s - i.need)}
+                </p>
+            })
+        })
+    };
+
+    view! {
+        <Show when=move || head.with(|h| h.is_some())>
+            <article class="pack-card" class:leaving=move || leaving.get()>
+                {move || {
+                    head.get()
+                        .map(|(colour, name, strength, _)| {
+                            view! {
+                                <div class="pc-top">
+                                    <PillDot colour=colour/>
+                                    <h3 class="pc-name">
+                                        {name}
+                                        <span class="pc-strength">{strength}</span>
+                                    </h3>
+                                    <FlagChip id=id/>
+                                </div>
+                            }
+                        })
+                }}
+                <div class="step-dose" class:night={row == Slot::Night}>
+                    <span class="sd-row">
+                        <Icon name=icon/>
+                        {format!("{} row", row.label())}
+                    </span>
+                    <span class="sd-amount">{dose}</span>
+                </div>
+                {strip}
+                {halves}
+                // The button comes before stock and notes so it stays in reach on small phones.
+                <button class="btn big primary pack-btn" on:click=move |_| pack_later(app, id, row, leaving)>
+                    <Icon name="check"/>
+                    "Packed"
+                </button>
+                {stock}
+                {move || {
+                    head.get()
+                        .map(|h| h.3)
+                        .filter(|n| !n.trim().is_empty())
+                        .map(|n| view! { <p class="pc-note">{n}</p> })
+                }}
+            </article>
+        </Show>
     }
 }
 
@@ -708,6 +782,120 @@ fn FlagChip(id: u32) -> impl IntoView {
     }
 }
 
+const DAY_FULL: [&str; 7] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+/// Which days this row gets this week, for when the box won't cover all of them. Each day
+/// is a toggle that updates in place, so it keeps focus between taps.
+#[component]
+fn DayPicker(id: u32, row: Slot, info: Memo<Option<StepInfo>>) -> impl IntoView {
+    let app = use_app();
+    let pick = move |f: fn(&StepInfo, Slot) -> u32| {
+        Memo::new(move |_| info.with(|i| i.as_ref().map(|i| f(i, row)).unwrap_or(0)))
+    };
+    let mask = pick(|i, row| i.days[row.index()] as u32);
+    let own = pick(|i, _| (i.med.days & EVERY_DAY) as u32);
+    let dose = pick(|i, row| i.med.dose_halves(row));
+    let fit = pick(|i, _| i.fit as u32);
+    let short = Memo::new(move |_| info.with(|i| i.as_ref().is_some_and(StepInfo::short)));
+    let tracked = Memo::new(move |_| info.with(|i| i.as_ref().is_some_and(|i| i.med.stock.is_some())));
+    let shared = Memo::new(move |_| {
+        info.with(|i| i.as_ref().is_some_and(|i| !i.other_done && i.med.dose_halves(row.other()) > 0))
+    });
+    let set = move |mask: u32| app.data.update(|d| choose_days(d, id, row, mask as u8));
+    let status = move || {
+        info.with(|i| {
+            let i = i.as_ref()?;
+            let need = i.need;
+            Some(match i.med.stock {
+                Some(s) if need > s => format!("Needs {need}, only {s} in the box: {} short", need - s),
+                Some(s) => format!("Needs {need} of the {s} in the box"),
+                None => format!("Needs {need}"),
+            })
+        })
+    };
+    let row_name = row.label().to_lowercase();
+    let unit = move || if dose.get() <= 2 { "tablet" } else { "tablets" };
+    view! {
+        <div class="day-pick" class:short=move || short.get()>
+            <p class="dp-status">
+                {move || view! { <Icon name=if short.get() { "alert" } else { "box" }/> }}
+                {status}
+            </p>
+            <div
+                class="day-strip pick"
+                class:night={row == Slot::Night}
+                role="group"
+                aria-label=format!("Days to pack in the {row_name} row")
+            >
+                {(0..7)
+                    .map(|d| {
+                        let bit = 1u32 << d;
+                        let on = move || mask.get() & bit != 0;
+                        view! {
+                            <button
+                                type="button"
+                                class="ds-cell"
+                                class:on=on
+                                disabled=move || own.get() & bit == 0
+                                aria-pressed=move || on().to_string()
+                                aria-label=move || {
+                                    if on() {
+                                        format!("{}, {} {}", DAY_FULL[d], fmt::halves(dose.get()), unit())
+                                    } else {
+                                        format!("{}, not packed", DAY_FULL[d])
+                                    }
+                                }
+                                on:click=move |_| set(mask.get_untracked() ^ bit)
+                            >
+                                <span class="ds-day">{fmt::DAY_LETTERS[d]}</span>
+                                <span class="ds-n">{move || if on() { fmt::halves(dose.get()) } else { "–".into() }}</span>
+                            </button>
+                        }
+                    })
+                    .collect_view()}
+            </div>
+            <div class="dp-actions">
+                {move || {
+                    (short.get() && fit.get() != mask.get())
+                        .then(|| {
+                            let f = fit.get();
+                            let label = match f {
+                                0 => "Fit to stock: skip this week".to_string(),
+                                f => format!("Fit to stock: {}", fmt::days(f as u8)),
+                            };
+                            view! {
+                                <button type="button" class="dp-btn primary" on:click=move |_| set(f)>
+                                    <Icon name="check"/>
+                                    {label}
+                                </button>
+                            }
+                        })
+                }}
+                {move || {
+                    (mask.get() != own.get())
+                        .then(|| {
+                            view! {
+                                <button type="button" class="dp-btn" on:click=move |_| set(own.get_untracked())>
+                                    "All days"
+                                </button>
+                            }
+                        })
+                }}
+                // The delivery sheet only lists medicines with a stock count.
+                <Show when=move || tracked.get()>
+                    <button type="button" class="dp-btn" on:click=move |_| app.topup.set(true)>
+                        <Icon name="box"/>
+                        "Add stock"
+                    </button>
+                </Show>
+            </div>
+            <Show when=move || shared.get()>
+                <p class="hint">{format!("The {} row gets the same days.", row.other().label().to_lowercase())}</p>
+            </Show>
+        </div>
+    }
+}
+
 /// The week along one row of the organiser, with the dose in the days that get it.
 #[component]
 fn DayStrip(line: PackLine, row: Slot) -> impl IntoView {
@@ -737,7 +925,7 @@ fn StepRow(id: u32, row: Slot, on_pick: Callback<u32>) -> impl IntoView {
     let info = Memo::new(move |_| {
         app.data.with(|d| {
             d.med(id).map(|m| {
-                let (per, mask) = row_dose(&pack_step(m, row, d.row_done(id, row.other())).line, row);
+                let (per, mask) = row_dose(&pack_step(m, d.week_days(m), row, d.row_done(id, row.other())).line, row);
                 let when = (mask != EVERY_DAY).then(|| fmt::days(mask));
                 (m.colour, m.name.clone(), m.strength.clone(), per, when)
             })
@@ -755,7 +943,7 @@ fn StepRow(id: u32, row: Slot, on_pick: Callback<u32>) -> impl IntoView {
                             <span class="sr-strength">{strength.clone()}</span>
                         </span>
                         <span class="sr-dose" class:night={row == Slot::Night}>
-                            {fmt::halves(per)}
+                            {if per == 0 { "–".to_string() } else { fmt::halves(per) }}
                             {when.clone().map(|w| view! { <small>{w}</small> })}
                         </span>
                     </button>

@@ -2,7 +2,9 @@
 
 use chrono::{Datelike, Days, NaiveDate};
 
-use crate::model::{Data, Medicine, OrderState, PackRecord, Packing, Slot};
+use crate::model::{Data, Medicine, OrderState, PackRecord, Packing, Slot, EVERY_DAY};
+
+const DAY_NAMES: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
 /// How to pack one medicine into a 7-day, morning/night organiser.
 #[derive(Clone, Debug, PartialEq)]
@@ -30,13 +32,19 @@ impl PackLine {
 
     /// The line for just some of a medicine's rows; the others stay empty in `grid`.
     pub fn for_slots(med: &Medicine, slots: &[Slot]) -> PackLine {
+        PackLine::for_rows(med, [med.days; 2], slots)
+    }
+
+    /// The line for some rows, each packed only on its weekdays in `days` (`[morning, night]`).
+    pub fn for_rows(med: &Medicine, days: [u8; 2], slots: &[Slot]) -> PackLine {
         let mut grid = [[0u32; 7]; 2];
         let mut whole = 0;
         let mut half_pieces = 0;
         for &slot in slots {
             let h = med.dose_halves(slot);
+            let mask = days[slot.index()];
             for (day, cell) in grid[slot.index()].iter_mut().enumerate() {
-                if h > 0 && med.takes_on(day) {
+                if h > 0 && med.takes_on(day) && mask & (1 << day) != 0 {
                     *cell = h;
                     whole += h / 2;
                     half_pieces += h % 2;
@@ -65,12 +73,12 @@ impl PackLine {
     }
 }
 
-/// Lines for every active medicine, alphabetical.
+/// Lines for every active medicine, alphabetical, on the days chosen for this week.
 pub fn week_plan(data: &Data) -> Vec<PackLine> {
     data.sorted_meds()
         .into_iter()
         .filter(|m| m.is_active())
-        .map(PackLine::for_med)
+        .map(|m| PackLine::for_rows(m, data.week_days(m), &Slot::ALL))
         .collect()
 }
 
@@ -83,16 +91,17 @@ pub struct PackStep {
     pub line: PackLine,
 }
 
-/// The step for one row. Once the other row is in, a half left over from cutting for it
-/// goes in this row; until then only last week's spares are there. Either order adds up
-/// to the same tablets and spares as packing both rows at once.
-pub fn pack_step(med: &Medicine, slot: Slot, other_done: bool) -> PackStep {
+/// The step for one row, on this week's `days` (`[morning, night]`). Once the other row
+/// is in, a half left over from cutting for it goes in this row; until then only last
+/// week's spares are there. Either order adds up to the same tablets and spares as packing
+/// both rows at once.
+pub fn pack_step(med: &Medicine, days: [u8; 2], slot: Slot, other_done: bool) -> PackStep {
     let line = if other_done {
         let mut after_other = med.clone();
-        after_other.spare_halves = PackLine::for_slots(med, &[slot.other()]).spare_after;
-        PackLine::for_slots(&after_other, &[slot])
+        after_other.spare_halves = PackLine::for_rows(med, days, &[slot.other()]).spare_after;
+        PackLine::for_rows(&after_other, days, &[slot])
     } else {
-        PackLine::for_slots(med, &[slot])
+        PackLine::for_rows(med, days, &[slot])
     };
     PackStep {
         med_id: med.id,
@@ -102,17 +111,80 @@ pub fn pack_step(med: &Medicine, slot: Slot, other_done: bool) -> PackStep {
 }
 
 /// Every step for the week: the whole morning row first, then the night row,
-/// each alphabetical.
+/// each alphabetical. A row with every day taken out still has its step, so the days
+/// can be put back.
 pub fn pack_steps(data: &Data) -> Vec<PackStep> {
     let meds: Vec<&Medicine> = data.sorted_meds().into_iter().filter(|m| m.is_active()).collect();
     Slot::ALL
         .into_iter()
         .flat_map(|slot| {
             meds.iter()
-                .map(move |m| pack_step(m, slot, data.row_done(m.id, slot.other())))
-                .filter(|s| s.line.total_halves > 0)
+                .filter(move |m| m.dose_halves(slot) > 0)
+                .map(move |m| pack_step(m, data.week_days(m), slot, data.row_done(m.id, slot.other())))
         })
         .collect()
+}
+
+/// Whole tablets this week's chosen days need from the box, both rows together.
+pub fn week_need(data: &Data, med: &Medicine) -> u32 {
+    PackLine::for_rows(med, data.week_days(med), &Slot::ALL).take
+}
+
+/// Packs this row (and the other one, unless it's already in) only on `mask` this week.
+/// The other row's own earlier choice is replaced too: the card says both rows follow.
+pub fn choose_days(data: &mut Data, med_id: u32, slot: Slot, mask: u8) {
+    let Some((own, other_dose)) = data.med(med_id).map(|m| (m.days, m.dose_halves(slot.other()))) else {
+        return;
+    };
+    let Some(p) = data.packing.as_mut() else {
+        return;
+    };
+    let mut rows = vec![slot];
+    if other_dose > 0 && !p.is_done(med_id, slot.other()) {
+        rows.push(slot.other());
+    }
+    for row in rows {
+        p.days.retain(|(id, s, _)| !(*id == med_id && *s == row));
+        let mask = mask & own;
+        // Every one of its days is the normal week, so there's nothing to remember.
+        if mask != own {
+            p.days.push((med_id, row, mask));
+        }
+    }
+}
+
+/// The days `choose_days` should get to fit the stock in the box: the earliest of the
+/// medicine's days, as many as the tablets cover. A row already packed keeps its days.
+pub fn fit_to_stock(data: &Data, med: &Medicine, slot: Slot) -> u8 {
+    let Some(stock) = med.stock else {
+        return med.days;
+    };
+    let mut days = data.week_days(med);
+    let free: Vec<Slot> = [slot, slot.other()]
+        .into_iter()
+        .filter(|s| *s == slot || !data.row_done(med.id, *s))
+        .collect();
+    let own: Vec<usize> = (0..7).filter(|d| med.takes_on(*d)).collect();
+    // Taking a day away never needs more tablets, so the first count that fits is the most.
+    for n in (0..=own.len()).rev() {
+        let mask = own[..n].iter().fold(0u8, |m, d| m | (1 << d));
+        for s in &free {
+            days[s.index()] = mask;
+        }
+        if PackLine::for_rows(med, days, &Slot::ALL).take <= stock {
+            return mask;
+        }
+    }
+    0
+}
+
+/// "Sat, Sun": weekdays in `mask`, Monday first.
+fn day_names(mask: u8) -> String {
+    (0..7)
+        .filter(|d| mask & (1 << d) != 0)
+        .map(|d| DAY_NAMES[d])
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Physical pieces (a half counts as one piece) per compartment, `[slot][weekday]`.
@@ -231,9 +303,10 @@ pub fn start_packing(data: &mut Data, week_of: NaiveDate) {
     match data.packing.as_mut() {
         Some(p) if p.week_of == week_of => {}
         Some(p) => {
-            // Ticks belong to the week they were made for.
+            // Ticks and chosen days belong to the week they were made for.
             p.week_of = week_of;
             p.done.clear();
+            p.days.clear();
         }
         None => data.packing = Some(Packing::new(week_of)),
     }
@@ -249,14 +322,18 @@ pub fn set_packed(data: &mut Data, med_id: u32, slot: Slot, packed: bool) {
     }
 }
 
-/// Closes the session: packed rows come out of stock and spare halves carry over.
+/// Closes the session: packed rows, on the days chosen for them, come out of stock and
+/// spare halves carry over.
 pub fn finish_packing(data: &mut Data, today: NaiveDate) -> Option<PackRecord> {
+    let ids: Vec<(u32, [u8; 2])> = week_plan(data)
+        .iter()
+        .filter_map(|l| data.med(l.med_id).map(|m| (m.id, data.week_days(m))))
+        .collect();
     let packing = data.packing.take()?;
     let mut packed = 0;
     let mut tablets = 0;
     let mut skipped = Vec::new();
-    let ids: Vec<u32> = week_plan(data).iter().map(|l| l.med_id).collect();
-    for id in ids {
+    for (id, days) in ids {
         let Some(med) = data.med_mut(id) else {
             continue;
         };
@@ -270,14 +347,34 @@ pub fn finish_packing(data: &mut Data, today: NaiveDate) -> Option<PackRecord> {
             .copied()
             .filter(|s| packing.is_done(id, *s))
             .collect();
-        if packed_slots.is_empty() {
-            skipped.push(med.display_name());
+        let line = PackLine::for_rows(med, days, &packed_slots);
+        let name = med.display_name();
+        if line.total_halves == 0 {
+            skipped.push(name);
             continue;
         }
-        for s in due.iter().filter(|s| !packed_slots.contains(s)) {
-            skipped.push(format!("{} ({})", med.display_name(), s.label().to_lowercase()));
+        // Days of each due row that stayed empty: all of them when the row wasn't packed.
+        let missing: Vec<(Slot, u8)> = due
+            .iter()
+            .map(|s| {
+                let kept = if packed_slots.contains(s) { days[s.index()] } else { 0 };
+                (*s, med.days & !kept & EVERY_DAY)
+            })
+            .filter(|(_, m)| *m != 0)
+            .collect();
+        match missing.as_slice() {
+            [(_, a), (_, b)] if a == b => skipped.push(format!("{name} ({})", day_names(*a))),
+            _ => {
+                for (s, m) in missing {
+                    let row = s.label().to_lowercase();
+                    if m == med.days & EVERY_DAY {
+                        skipped.push(format!("{name} ({row})"));
+                    } else {
+                        skipped.push(format!("{name} ({row}: {})", day_names(m)));
+                    }
+                }
+            }
         }
-        let line = PackLine::for_slots(med, &packed_slots);
         if let Some(stock) = med.stock.as_mut() {
             *stock = stock.saturating_sub(line.take);
         }

@@ -62,6 +62,11 @@ pub fn days(mask: u8) -> String {
         0b001_1111 => "Weekdays".into(),
         0b110_0000 => "Weekends".into(),
         m if m.count_ones() == 1 => format!("{} only", DAY_NAMES[m.trailing_zeros() as usize]),
+        // A run of three or more days in a row: "Mon–Thu".
+        m if m.count_ones() >= 3 && (m >> m.trailing_zeros()).count_ones() == (m >> m.trailing_zeros()).trailing_ones() => {
+            let first = m.trailing_zeros() as usize;
+            format!("{}–{}", DAY_NAMES[first], DAY_NAMES[first + m.count_ones() as usize - 1])
+        }
         m => (0..7)
             .filter(|d| m & (1 << d) != 0)
             .map(|d| DAY_NAMES[d])

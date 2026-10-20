@@ -963,6 +963,88 @@ button {
   font-weight: 720;
 }
 
+/* Short on stock: choose the days this row gets. */
+.day-pick {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 15px;
+  background: var(--surface-2);
+}
+.day-pick.short {
+  background: var(--critical-soft);
+}
+.dp-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+.day-pick.short .dp-status {
+  color: var(--critical);
+}
+.dp-status .icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.day-strip.pick {
+  gap: 4px;
+}
+.day-strip.pick .ds-cell {
+  min-height: 48px;
+  align-content: center;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line);
+  transition: background 0.15s, box-shadow 0.15s, transform 0.12s var(--ease);
+}
+.day-strip.pick .ds-cell.on {
+  background: var(--morning-soft);
+  box-shadow: inset 0 0 0 2px var(--morning);
+}
+.day-strip.pick.night .ds-cell.on {
+  background: var(--night-soft);
+  box-shadow: inset 0 0 0 2px var(--night);
+}
+.day-strip.pick .ds-cell:active:not(:disabled) {
+  transform: scale(0.94);
+}
+.day-strip.pick .ds-cell:disabled {
+  opacity: 0.35;
+  background: transparent;
+  box-shadow: none;
+}
+.dp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.dp-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 14px;
+  border-radius: 99px;
+  font-size: 13.5px;
+  font-weight: 620;
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+.dp-btn.primary {
+  color: #fff;
+  background: var(--accent);
+  box-shadow: none;
+}
+.dp-btn .icon {
+  width: 15px;
+  height: 15px;
+  flex: none;
+}
+
 /* The rest of the row: open one, or tick it straight off. */
 .step-rows {
   display: grid;
@@ -1368,6 +1450,113 @@ button.med-row:hover {
 }
 .receive .field {
   flex: 1;
+}
+.notice .btn.small {
+  margin-top: 10px;
+}
+
+/* Add a delivery: one row per medicine with a stock count. */
+.topup-list {
+  display: grid;
+  margin: 0 -6px;
+}
+.topup-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 8px;
+  padding: 12px 6px;
+}
+.topup-row + .topup-row {
+  box-shadow: 0 -1px 0 var(--line);
+}
+.tu-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.tu-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15.5px;
+  font-weight: 620;
+}
+.tu-sub {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.tu-sub.up {
+  color: var(--good);
+  font-weight: 600;
+}
+.tu-tag {
+  padding: 1px 8px;
+  border-radius: 99px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.tu-controls {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.tu-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 40px;
+  padding: 0 13px;
+  border-radius: 99px;
+  font-size: 13.5px;
+  font-weight: 620;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.tu-box .icon {
+  width: 15px;
+  height: 15px;
+}
+.tu-count {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+.tu-count input {
+  width: 68px;
+  height: 44px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 12px;
+  text-align: center;
+  font-size: 18px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--line);
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+.tu-count input::-webkit-outer-spin-button,
+.tu-count input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.tu-count input:focus {
+  outline: none;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 2px var(--accent);
 }
 
 /* ───────────────────────── Forms ───────────────────────── */

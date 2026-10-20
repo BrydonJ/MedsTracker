@@ -197,6 +197,8 @@ pub struct Packing {
     pub week_of: NaiveDate,
     /// Medicine and row pairs already put in the organiser.
     pub done: Vec<(u32, Slot)>,
+    /// Rows packed on fewer days this week (short on stock): medicine, row, weekday mask.
+    pub days: Vec<(u32, Slot, u8)>,
 }
 
 impl Packing {
@@ -204,11 +206,20 @@ impl Packing {
         Packing {
             week_of,
             done: Vec::new(),
+            days: Vec::new(),
         }
     }
 
     pub fn is_done(&self, med_id: u32, slot: Slot) -> bool {
         self.done.contains(&(med_id, slot))
+    }
+
+    /// The days chosen for this row this week, if they were narrowed down.
+    pub fn chosen_days(&self, med_id: u32, slot: Slot) -> Option<u8> {
+        self.days
+            .iter()
+            .find(|(id, s, _)| *id == med_id && *s == slot)
+            .map(|(_, _, mask)| *mask)
     }
 }
 
@@ -220,6 +231,8 @@ struct PackingSaved {
     done: Vec<(u32, Slot)>,
     #[serde(default)]
     packed: Vec<u32>,
+    #[serde(default)]
+    days: Vec<(u32, Slot, u8)>,
 }
 
 impl From<PackingSaved> for Packing {
@@ -237,6 +250,7 @@ impl From<PackingSaved> for Packing {
         Packing {
             week_of: s.week_of,
             done,
+            days: s.days,
         }
     }
 }
@@ -311,10 +325,20 @@ impl Data {
         self.packing.as_ref().is_some_and(|p| p.is_done(med_id, slot))
     }
 
+    /// Weekdays each row (`[morning, night]`) gets this week: the medicine's own days,
+    /// narrowed to the ones chosen when short on stock.
+    pub fn week_days(&self, med: &Medicine) -> [u8; 2] {
+        Slot::ALL.map(|slot| {
+            let chosen = self.packing.as_ref().and_then(|p| p.chosen_days(med.id, slot));
+            med.days & chosen.unwrap_or(EVERY_DAY)
+        })
+    }
+
     pub fn remove(&mut self, id: u32) {
         self.meds.retain(|m| m.id != id);
         if let Some(p) = self.packing.as_mut() {
             p.done.retain(|(x, _)| *x != id);
+            p.days.retain(|(x, _, _)| *x != id);
         }
     }
 

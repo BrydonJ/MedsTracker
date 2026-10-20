@@ -63,6 +63,8 @@ pub struct AppState {
     pub tab: RwSignal<Tab>,
     /// The medicine open in the editor sheet (a new one has an unused id).
     pub editing: RwSignal<Option<Medicine>>,
+    /// Whether the "add a delivery" sheet is open.
+    pub topup: RwSignal<bool>,
     pub toast: RwSignal<Option<Toast>>,
     pub theme: RwSignal<store::Theme>,
     pub last_backup: RwSignal<Option<f64>>,
@@ -134,6 +136,7 @@ fn App() -> impl IntoView {
         today,
         tab: RwSignal::new(Tab::Pack),
         editing: RwSignal::new(None),
+        topup: RwSignal::new(false),
         toast: RwSignal::new(None),
         theme: RwSignal::new(store::load_theme()),
         last_backup: RwSignal::new(store::last_backup()),
@@ -168,7 +171,8 @@ fn App() -> impl IntoView {
 
     // Shortcuts: N = new medicine, 1–4 = switch tab.
     let _ = window_event_listener(ev::keydown, move |e| {
-        if e.ctrl_key() || e.meta_key() || e.alt_key() || state.editing.get_untracked().is_some() {
+        let sheet_open = state.editing.get_untracked().is_some() || state.topup.get_untracked();
+        if e.ctrl_key() || e.meta_key() || e.alt_key() || sheet_open {
             return;
         }
         if ui::typing_in_field(&e) {
@@ -193,6 +197,7 @@ fn App() -> impl IntoView {
     view! {
         <Shell/>
         <meds::Editor/>
+        <order::TopUp/>
         <ToastHost/>
         <print::PrintSheet/>
     }

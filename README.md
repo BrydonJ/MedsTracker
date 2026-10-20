@@ -12,6 +12,8 @@ Built in Rust: [Leptos](https://leptos.dev) compiled to WebAssembly, with a pack
 - **Check organiser:** a 7 × 2 grid of how many pieces should be in every compartment. Tap one to see its contents.
 - **Ordering:** tap "Running low?" while packing to flag a medicine. Medicines with a stock count are flagged automatically when they drop under a threshold you choose. Send the list to the pharmacy from the phone's share sheet, mark items as ordered, and add the tablets to stock when they arrive.
 - **Stock (optional):** finishing a week subtracts what you packed, and the app warns you before you're short.
+- **Short on stock?** The card shows which days to pack as a row of day toggles. Tap days on or off, or tap **Fit to stock** to fill the earliest days the box covers. Only those compartments are counted, and the week's history notes the days left empty.
+- **Add a delivery:** one sheet for everything that came in. Type a count or tap **Box of N** for each medicine, then add it all to stock at once (with undo). Open it from the Order tab, the start screen or a short card.
 - **Pause** a medicine instead of deleting it.
 - **Print** a packing checklist laid out like the paper sheet.
 - **Backup / restore** as a JSON file, light/dark theme, installable as a PWA.

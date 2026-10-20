@@ -216,6 +216,7 @@ fn json_round_trip_and_validation() {
     data.packing = Some(Packing {
         week_of: d(2026, 10, 26),
         done: vec![(1, Slot::Night)],
+        days: vec![(1, Slot::Morning, 0b101)],
     });
     let back = Data::from_json(&data.to_json()).unwrap();
     assert_eq!(back, data);
@@ -265,8 +266,8 @@ fn steps_pack_the_morning_row_then_the_night_row() {
 fn a_half_cut_in_the_morning_goes_in_at_night() {
     // ½ morning and ½ night: cut 4 for the morning, the spare half starts the night row.
     let m = med(1, "Cardicor", 0.5, 0.5);
-    let am = pack_step(&m, Slot::Morning, false).line;
-    let pm = pack_step(&m, Slot::Night, true).line;
+    let am = pack_step(&m, [m.days; 2], Slot::Morning, false).line;
+    let pm = pack_step(&m, [m.days; 2], Slot::Night, true).line;
     assert_eq!((am.cut, am.spare_after), (4, 1));
     assert_eq!((pm.use_spare, pm.cut, pm.spare_after), (1, 3, 0));
     assert_eq!(am.grid[1], [0; 7]);
@@ -275,7 +276,7 @@ fn a_half_cut_in_the_morning_goes_in_at_night() {
     for (am_dose, pm_dose, spare) in [(0.5, 0.5, 0), (1.5, 0.5, 1), (0.5, 1.5, 1), (1.5, 1.5, 0), (2.0, 0.5, 1)] {
         let mut m = med(1, "X", am_dose, pm_dose);
         m.spare_halves = spare;
-        let (am, pm) = (pack_step(&m, Slot::Morning, false).line, pack_step(&m, Slot::Night, true).line);
+        let (am, pm) = (pack_step(&m, [m.days; 2], Slot::Morning, false).line, pack_step(&m, [m.days; 2], Slot::Night, true).line);
         let all = PackLine::for_med(&m);
         assert_eq!(am.take + pm.take, all.take, "{am_dose}/{pm_dose}/{spare}");
         assert_eq!(pm.spare_after, all.spare_after, "{am_dose}/{pm_dose}/{spare}");
@@ -352,4 +353,147 @@ fn night_then_morning_adds_up_like_packing_both_at_once() {
     assert_eq!(data.med(1).unwrap().stock, Some(13));
     assert_eq!(data.med(1).unwrap().spare_halves, morning.spare_after);
     assert_eq!(morning.spare_after, 0);
+}
+
+fn packing_with(meds: Vec<Medicine>) -> Data {
+    let mut data = Data::default();
+    data.meds = meds;
+    start_packing(&mut data, d(2026, 10, 26));
+    data
+}
+
+const MON_TO_THU: u8 = 0b000_1111;
+
+#[test]
+fn chosen_days_only_fill_those_compartments() {
+    let mut data = packing_with(vec![med(1, "Cipalat", 1.0, 1.0)]);
+    choose_days(&mut data, 1, Slot::Morning, MON_TO_THU);
+    // Neither row is packed yet, so both follow.
+    assert_eq!(data.week_days(data.med(1).unwrap()), [MON_TO_THU; 2]);
+    let plan = week_plan(&data);
+    assert_eq!(plan[0].grid[0], [2, 2, 2, 2, 0, 0, 0]);
+    assert_eq!(plan[0].take, 8);
+    assert_eq!(week_need(&data, data.med(1).unwrap()), 8);
+}
+
+#[test]
+fn choosing_days_leaves_a_packed_row_alone() {
+    let mut data = packing_with(vec![med(1, "Cipalat", 1.0, 1.0)]);
+    set_packed(&mut data, 1, Slot::Morning, true);
+    choose_days(&mut data, 1, Slot::Night, MON_TO_THU);
+    assert_eq!(data.week_days(data.med(1).unwrap()), [EVERY_DAY, MON_TO_THU]);
+    // Back to every day forgets the choice.
+    choose_days(&mut data, 1, Slot::Night, EVERY_DAY);
+    assert!(data.packing.as_ref().unwrap().days.is_empty());
+}
+
+#[test]
+fn a_row_with_no_days_keeps_its_step() {
+    let mut data = packing_with(vec![med(1, "Cipalat", 1.0, 0.0)]);
+    choose_days(&mut data, 1, Slot::Morning, 0);
+    let steps = pack_steps(&data);
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].line.total_halves, 0);
+}
+
+#[test]
+fn fit_to_stock_picks_the_earliest_days_the_box_covers() {
+    let mut m = med(1, "Cardicor", 0.5, 0.5);
+    m.stock = Some(3);
+    m.spare_halves = 1;
+    let data = packing_with(vec![m]);
+    let m = data.med(1).unwrap();
+    // 3 tablets plus a spare half is 7 halves: three days of a half morning and night.
+    assert_eq!(fit_to_stock(&data, m, Slot::Morning), 0b000_0111);
+}
+
+#[test]
+fn fit_to_stock_counts_what_a_packed_row_already_took() {
+    let mut m = med(1, "Cipalat", 1.0, 1.0);
+    m.stock = Some(10);
+    let mut data = packing_with(vec![m]);
+    set_packed(&mut data, 1, Slot::Morning, true);
+    let m = data.med(1).unwrap().clone();
+    assert_eq!(fit_to_stock(&data, &m, Slot::Night), 0b000_0111);
+    choose_days(&mut data, 1, Slot::Night, 0b000_0111);
+    assert_eq!(week_need(&data, &m), 10);
+}
+
+#[test]
+fn fit_to_stock_only_offers_the_medicines_own_days() {
+    let mut m = med(1, "Vitamin D", 1.0, 0.0);
+    m.days = 0b010_0101; // Mon, Wed, Sat
+    m.stock = Some(2);
+    let data = packing_with(vec![m]);
+    assert_eq!(fit_to_stock(&data, data.med(1).unwrap(), Slot::Morning), 0b000_0101);
+}
+
+#[test]
+fn finishing_takes_only_the_chosen_days_from_stock() {
+    let mut m = med(1, "Cipalat", 1.0, 1.0);
+    m.stock = Some(9);
+    let mut data = packing_with(vec![m]);
+    choose_days(&mut data, 1, Slot::Morning, MON_TO_THU);
+    set_packed(&mut data, 1, Slot::Morning, true);
+    set_packed(&mut data, 1, Slot::Night, true);
+    let rec = finish_packing(&mut data, d(2026, 10, 25)).unwrap();
+    assert_eq!(data.med(1).unwrap().stock, Some(1));
+    assert_eq!(rec.tablets, 8);
+    assert_eq!(rec.packed, 1);
+    assert_eq!(rec.skipped, vec!["Cipalat (Fri, Sat, Sun)".to_string()]);
+}
+
+#[test]
+fn finishing_names_the_missing_days_per_row() {
+    let mut data = packing_with(vec![med(1, "Cipalat", 1.0, 1.0)]);
+    set_packed(&mut data, 1, Slot::Morning, true);
+    choose_days(&mut data, 1, Slot::Night, 0b001_1111);
+    set_packed(&mut data, 1, Slot::Night, true);
+    let rec = finish_packing(&mut data, d(2026, 10, 25)).unwrap();
+    assert_eq!(rec.skipped, vec!["Cipalat (night: Sat, Sun)".to_string()]);
+}
+
+#[test]
+fn a_packed_row_with_no_days_counts_as_skipped() {
+    let mut m = med(1, "Cipalat", 1.0, 0.0);
+    m.stock = Some(5);
+    let mut data = packing_with(vec![m]);
+    choose_days(&mut data, 1, Slot::Morning, 0);
+    set_packed(&mut data, 1, Slot::Morning, true);
+    let rec = finish_packing(&mut data, d(2026, 10, 25)).unwrap();
+    assert_eq!((rec.packed, rec.tablets), (0, 0));
+    assert_eq!(rec.skipped, vec!["Cipalat".to_string()]);
+    assert_eq!(data.med(1).unwrap().stock, Some(5));
+}
+
+#[test]
+fn rows_on_different_days_add_up_in_either_order() {
+    let mut m = med(1, "Cardicor", 0.5, 0.5);
+    m.stock = Some(20);
+    let both = |first: Slot| {
+        let mut data = packing_with(vec![m.clone()]);
+        // Morning every day, night Mon to Thu.
+        data.packing.as_mut().unwrap().days = vec![(1, Slot::Night, MON_TO_THU)];
+        let step = |data: &Data, slot| pack_steps(data).into_iter().find(|s| s.slot == slot).unwrap().line;
+        let a = step(&data, first);
+        set_packed(&mut data, 1, first, true);
+        let b = step(&data, first.other());
+        set_packed(&mut data, 1, first.other(), true);
+        finish_packing(&mut data, d(2026, 10, 25));
+        (a.take + b.take, b.spare_after, data.med(1).unwrap().stock, data.med(1).unwrap().spare_halves)
+    };
+    let whole = PackLine::for_rows(&m, [EVERY_DAY, MON_TO_THU], &Slot::ALL);
+    let expected = (whole.take, whole.spare_after, Some(20 - whole.take), whole.spare_after);
+    assert_eq!(both(Slot::Morning), expected);
+    assert_eq!(both(Slot::Night), expected);
+}
+
+#[test]
+fn chosen_days_survive_a_reload_and_clear_for_a_new_week() {
+    let mut data = packing_with(vec![med(1, "Cipalat", 1.0, 0.0)]);
+    choose_days(&mut data, 1, Slot::Morning, MON_TO_THU);
+    let mut back = Data::from_json(&data.to_json()).unwrap();
+    assert_eq!(back.week_days(back.med(1).unwrap())[0], MON_TO_THU);
+    start_packing(&mut back, d(2026, 11, 2));
+    assert_eq!(back.week_days(back.med(1).unwrap())[0], EVERY_DAY);
 }
