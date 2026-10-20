@@ -157,9 +157,9 @@ fn finishing_deducts_stock_and_records_history() {
     data.meds = vec![a, b, c];
 
     start_packing(&mut data, d(2026, 10, 26));
-    set_packed(&mut data, 1, true);
-    set_packed(&mut data, 2, true);
-    set_packed(&mut data, 2, true); // idempotent
+    set_packed(&mut data, 1, Slot::Morning, true);
+    set_packed(&mut data, 2, Slot::Morning, true);
+    set_packed(&mut data, 2, Slot::Morning, true); // idempotent
     let rec = finish_packing(&mut data, d(2026, 10, 25)).unwrap();
 
     assert_eq!(data.packing, None);
@@ -178,14 +178,14 @@ fn start_packing_keeps_progress() {
     let mut data = Data::default();
     data.meds = vec![med(1, "A", 1.0, 0.0)];
     start_packing(&mut data, d(2026, 10, 26));
-    set_packed(&mut data, 1, true);
+    set_packed(&mut data, 1, Slot::Morning, true);
     start_packing(&mut data, d(2026, 10, 26));
-    assert_eq!(data.packing.as_ref().unwrap().packed, vec![1]);
+    assert_eq!(data.packing.as_ref().unwrap().done, vec![(1, Slot::Morning)]);
     // A different week starts with nothing ticked.
     start_packing(&mut data, d(2026, 11, 2));
     let p = data.packing.as_ref().unwrap();
     assert_eq!(p.week_of, d(2026, 11, 2));
-    assert!(p.packed.is_empty());
+    assert!(p.done.is_empty());
 }
 
 #[test]
@@ -193,9 +193,9 @@ fn removing_a_medicine_clears_it_from_packing() {
     let mut data = Data::default();
     data.meds = vec![med(1, "A", 1.0, 0.0)];
     start_packing(&mut data, d(2026, 10, 26));
-    set_packed(&mut data, 1, true);
+    set_packed(&mut data, 1, Slot::Night, true);
     data.remove(1);
-    assert!(data.packing.unwrap().packed.is_empty());
+    assert!(data.packing.unwrap().done.is_empty());
 }
 
 #[test]
@@ -215,7 +215,7 @@ fn json_round_trip_and_validation() {
     data.meds = vec![med(1, "A", 0.5, 2.0)];
     data.packing = Some(Packing {
         week_of: d(2026, 10, 26),
-        packed: vec![1],
+        done: vec![(1, Slot::Night)],
     });
     let back = Data::from_json(&data.to_json()).unwrap();
     assert_eq!(back, data);
@@ -241,4 +241,115 @@ fn halves_rounds_to_nearest_half() {
     assert_eq!(halves(0.76), 2);
     assert_eq!(halves(-1.0), 0);
     assert_eq!(halves(f64::NAN), 0);
+}
+
+#[test]
+fn steps_pack_the_morning_row_then_the_night_row() {
+    let mut data = Data::default();
+    let mut paused = med(4, "Lyrica", 1.0, 1.0);
+    paused.paused = true;
+    data.meds = vec![
+        med(1, "Zinc", 1.0, 1.0),
+        med(2, "Aspen", 0.0, 2.0),
+        med(3, "Bisop", 0.5, 0.0),
+        paused,
+    ];
+    let order: Vec<(u32, Slot)> = pack_steps(&data).iter().map(|s| (s.med_id, s.slot)).collect();
+    assert_eq!(
+        order,
+        vec![(3, Slot::Morning), (1, Slot::Morning), (2, Slot::Night), (1, Slot::Night)]
+    );
+}
+
+#[test]
+fn a_half_cut_in_the_morning_goes_in_at_night() {
+    // ½ morning and ½ night: cut 4 for the morning, the spare half starts the night row.
+    let m = med(1, "Cardicor", 0.5, 0.5);
+    let am = pack_step(&m, Slot::Morning, false).line;
+    let pm = pack_step(&m, Slot::Night, true).line;
+    assert_eq!((am.cut, am.spare_after), (4, 1));
+    assert_eq!((pm.use_spare, pm.cut, pm.spare_after), (1, 3, 0));
+    assert_eq!(am.grid[1], [0; 7]);
+    assert_eq!(pm.grid[0], [0; 7]);
+    // The two steps add up to packing the medicine in one go.
+    for (am_dose, pm_dose, spare) in [(0.5, 0.5, 0), (1.5, 0.5, 1), (0.5, 1.5, 1), (1.5, 1.5, 0), (2.0, 0.5, 1)] {
+        let mut m = med(1, "X", am_dose, pm_dose);
+        m.spare_halves = spare;
+        let (am, pm) = (pack_step(&m, Slot::Morning, false).line, pack_step(&m, Slot::Night, true).line);
+        let all = PackLine::for_med(&m);
+        assert_eq!(am.take + pm.take, all.take, "{am_dose}/{pm_dose}/{spare}");
+        assert_eq!(pm.spare_after, all.spare_after, "{am_dose}/{pm_dose}/{spare}");
+    }
+}
+
+#[test]
+fn finishing_with_one_row_packed_takes_only_that_row() {
+    let mut data = Data::default();
+    let mut a = med(1, "Essentiale", 1.0, 2.0);
+    a.stock = Some(40);
+    data.meds = vec![a];
+    start_packing(&mut data, d(2026, 10, 26));
+    set_packed(&mut data, 1, Slot::Morning, true);
+    let rec = finish_packing(&mut data, d(2026, 10, 25)).unwrap();
+    assert_eq!(rec.packed, 1);
+    assert_eq!(rec.tablets, 7);
+    assert_eq!(rec.skipped, vec!["Essentiale (night)".to_string()]);
+    assert_eq!(data.med(1).unwrap().stock, Some(33));
+}
+
+#[test]
+fn old_saves_with_whole_medicine_ticks_still_load() {
+    let json = r#"{"meds":[{"id":1,"name":"A","morning":1,"night":1}],
+        "packing":{"week_of":"2026-10-26","packed":[1]}}"#;
+    let data = Data::from_json(json).unwrap();
+    let p = data.packing.unwrap();
+    assert!(p.is_done(1, Slot::Morning) && p.is_done(1, Slot::Night));
+}
+
+#[test]
+fn night_first_only_counts_on_spares_already_there() {
+    let mut data = Data::default();
+    let mut m = med(1, "Cardicor", 0.5, 0.5);
+    m.stock = Some(20);
+    data.meds = vec![m];
+    start_packing(&mut data, d(2026, 10, 26));
+    // No spare half exists until the morning row is cut, so night cuts its own.
+    let night = pack_steps(&data).into_iter().find(|s| s.slot == Slot::Night).unwrap();
+    assert_eq!((night.line.use_spare, night.line.cut, night.line.take), (0, 4, 4));
+    // Finishing with only the night row agrees with what the card said.
+    set_packed(&mut data, 1, Slot::Night, true);
+    finish_packing(&mut data, d(2026, 10, 25));
+    assert_eq!(data.med(1).unwrap().stock, Some(16));
+    assert_eq!(data.med(1).unwrap().spare_halves, 1);
+}
+
+#[test]
+fn night_uses_the_morning_half_once_the_morning_is_in() {
+    let mut data = Data::default();
+    data.meds = vec![med(1, "Cardicor", 0.5, 0.5)];
+    start_packing(&mut data, d(2026, 10, 26));
+    set_packed(&mut data, 1, Slot::Morning, true);
+    let night = pack_steps(&data).into_iter().find(|s| s.slot == Slot::Night).unwrap();
+    assert_eq!((night.line.use_spare, night.line.cut), (1, 3));
+}
+
+#[test]
+fn night_then_morning_adds_up_like_packing_both_at_once() {
+    let mut data = Data::default();
+    let mut m = med(1, "Cardicor", 0.5, 0.5);
+    m.stock = Some(20);
+    data.meds = vec![m];
+    start_packing(&mut data, d(2026, 10, 26));
+    let step = |data: &Data, slot| pack_steps(data).into_iter().find(|s| s.slot == slot).unwrap().line;
+    let night = step(&data, Slot::Night);
+    set_packed(&mut data, 1, Slot::Night, true);
+    // The half left over from the night row starts the morning row.
+    let morning = step(&data, Slot::Morning);
+    assert_eq!((morning.use_spare, morning.cut), (1, 3));
+    assert_eq!(night.take + morning.take, 7);
+    set_packed(&mut data, 1, Slot::Morning, true);
+    finish_packing(&mut data, d(2026, 10, 25));
+    assert_eq!(data.med(1).unwrap().stock, Some(13));
+    assert_eq!(data.med(1).unwrap().spare_halves, morning.spare_after);
+    assert_eq!(morning.spare_after, 0);
 }

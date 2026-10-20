@@ -25,6 +25,13 @@ impl Slot {
         }
     }
 
+    pub fn other(self) -> Slot {
+        match self {
+            Slot::Morning => Slot::Night,
+            Slot::Night => Slot::Morning,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Slot::Morning => "Morning",
@@ -184,12 +191,54 @@ impl Default for Settings {
 
 /// A week being packed right now; survives closing the app half way.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "PackingSaved")]
 pub struct Packing {
     /// Monday of the week the organiser is for.
     pub week_of: NaiveDate,
-    /// Medicine ids already put in the organiser.
+    /// Medicine and row pairs already put in the organiser.
+    pub done: Vec<(u32, Slot)>,
+}
+
+impl Packing {
+    pub fn new(week_of: NaiveDate) -> Self {
+        Packing {
+            week_of,
+            done: Vec::new(),
+        }
+    }
+
+    pub fn is_done(&self, med_id: u32, slot: Slot) -> bool {
+        self.done.contains(&(med_id, slot))
+    }
+}
+
+/// `Packing` as saved, including the whole-medicine ticks older versions stored.
+#[derive(Deserialize)]
+struct PackingSaved {
+    week_of: NaiveDate,
     #[serde(default)]
-    pub packed: Vec<u32>,
+    done: Vec<(u32, Slot)>,
+    #[serde(default)]
+    packed: Vec<u32>,
+}
+
+impl From<PackingSaved> for Packing {
+    fn from(s: PackingSaved) -> Self {
+        let mut done = s.done;
+        // A medicine ticked as a whole had both of its rows packed. A row it has no dose
+        // for is ignored by the steps and by finishing, so marking it too is harmless.
+        for id in s.packed {
+            for slot in Slot::ALL {
+                if !done.contains(&(id, slot)) {
+                    done.push((id, slot));
+                }
+            }
+        }
+        Packing {
+            week_of: s.week_of,
+            done,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -257,10 +306,15 @@ impl Data {
         }
     }
 
+    /// Whether this week's `slot` row already has this medicine in it.
+    pub fn row_done(&self, med_id: u32, slot: Slot) -> bool {
+        self.packing.as_ref().is_some_and(|p| p.is_done(med_id, slot))
+    }
+
     pub fn remove(&mut self, id: u32) {
         self.meds.retain(|m| m.id != id);
         if let Some(p) = self.packing.as_mut() {
-            p.packed.retain(|x| *x != id);
+            p.done.retain(|(x, _)| *x != id);
         }
     }
 

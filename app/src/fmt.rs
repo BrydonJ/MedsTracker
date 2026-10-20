@@ -1,7 +1,7 @@
 //! Text formatting for tablets, days and dates.
 
 use chrono::{Datelike, NaiveDate};
-use meds_core::{Medicine, PackLine, Slot, EVERY_DAY};
+use meds_core::{Medicine, Slot, EVERY_DAY};
 
 pub const DAY_LETTERS: [&str; 7] = ["M", "T", "W", "T", "F", "S", "S"];
 pub const DAY_NAMES: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -82,21 +82,6 @@ pub fn dose_summary(m: &Medicine) -> String {
     } else {
         parts.join(" · ")
     }
-}
-
-/// What goes into one slot's compartments: "1 in each", "½ in each", "Wed only".
-pub fn slot_instruction(line: &PackLine, slot: Slot) -> Option<String> {
-    let days = line.slot_days(slot);
-    let first = *days.first()?;
-    let n = halves(line.grid[slot.index()][first]);
-    Some(match days.len() {
-        7 => format!("{n} in each"),
-        1 => format!("{n} on {}", DAY_NAMES[first]),
-        _ => format!(
-            "{n} on {}",
-            days.iter().map(|d| DAY_NAMES[*d]).collect::<Vec<_>>().join(", ")
-        ),
-    })
 }
 
 /// "≈ 3 weeks", "9 days", "1 day".

@@ -6,7 +6,7 @@ Built in Rust: [Leptos](https://leptos.dev) compiled to WebAssembly, with a pack
 
 ## Features
 
-- **Pack one medicine at a time.** Each card says exactly what goes where ("1 in each morning", "½ in each", "1 on Wed"), with one big **Packed** button. A progress bar tracks the week, and packed medicines collapse into chips you can tap to undo.
+- **Morning row, then night row.** Packing goes along the organiser one row at a time, one medicine at a time. The card in front of you shows the dose in big type, which days get it, and any halving, with one big **Packed** button. The rest of the row sits underneath; tap one to open it, or tick it straight off. Morning and night each have their own progress, the night row starts by itself once the morning is done, and packed medicines collapse into chips you can tap to undo. Built for a phone first.
 - **Half tablets handled for you.** The app works out how many tablets to cut and remembers the spare half for next week.
 - **Weekly or specific-day medicines** show a mini organiser grid so they land in the right compartment.
 - **Check organiser:** a 7 × 2 grid of how many pieces should be in every compartment. Tap one to see its contents.

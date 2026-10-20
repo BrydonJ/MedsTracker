@@ -25,10 +25,15 @@ pub struct PackLine {
 
 impl PackLine {
     pub fn for_med(med: &Medicine) -> PackLine {
+        PackLine::for_slots(med, &Slot::ALL)
+    }
+
+    /// The line for just some of a medicine's rows; the others stay empty in `grid`.
+    pub fn for_slots(med: &Medicine, slots: &[Slot]) -> PackLine {
         let mut grid = [[0u32; 7]; 2];
         let mut whole = 0;
         let mut half_pieces = 0;
-        for slot in Slot::ALL {
+        for &slot in slots {
             let h = med.dose_halves(slot);
             for (day, cell) in grid[slot.index()].iter_mut().enumerate() {
                 if h > 0 && med.takes_on(day) {
@@ -66,6 +71,47 @@ pub fn week_plan(data: &Data) -> Vec<PackLine> {
         .into_iter()
         .filter(|m| m.is_active())
         .map(PackLine::for_med)
+        .collect()
+}
+
+/// One pass along the organiser: one medicine into one row (morning or night).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PackStep {
+    pub med_id: u32,
+    pub slot: Slot,
+    /// Only this row's compartments are filled in.
+    pub line: PackLine,
+}
+
+/// The step for one row. Once the other row is in, a half left over from cutting for it
+/// goes in this row; until then only last week's spares are there. Either order adds up
+/// to the same tablets and spares as packing both rows at once.
+pub fn pack_step(med: &Medicine, slot: Slot, other_done: bool) -> PackStep {
+    let line = if other_done {
+        let mut after_other = med.clone();
+        after_other.spare_halves = PackLine::for_slots(med, &[slot.other()]).spare_after;
+        PackLine::for_slots(&after_other, &[slot])
+    } else {
+        PackLine::for_slots(med, &[slot])
+    };
+    PackStep {
+        med_id: med.id,
+        slot,
+        line,
+    }
+}
+
+/// Every step for the week: the whole morning row first, then the night row,
+/// each alphabetical.
+pub fn pack_steps(data: &Data) -> Vec<PackStep> {
+    let meds: Vec<&Medicine> = data.sorted_meds().into_iter().filter(|m| m.is_active()).collect();
+    Slot::ALL
+        .into_iter()
+        .flat_map(|slot| {
+            meds.iter()
+                .map(move |m| pack_step(m, slot, data.row_done(m.id, slot.other())))
+                .filter(|s| s.line.total_halves > 0)
+        })
         .collect()
 }
 
@@ -187,28 +233,23 @@ pub fn start_packing(data: &mut Data, week_of: NaiveDate) {
         Some(p) => {
             // Ticks belong to the week they were made for.
             p.week_of = week_of;
-            p.packed.clear();
+            p.done.clear();
         }
-        None => {
-            data.packing = Some(Packing {
-                week_of,
-                packed: Vec::new(),
-            })
-        }
+        None => data.packing = Some(Packing::new(week_of)),
     }
 }
 
-pub fn set_packed(data: &mut Data, med_id: u32, packed: bool) {
+pub fn set_packed(data: &mut Data, med_id: u32, slot: Slot, packed: bool) {
     let Some(p) = data.packing.as_mut() else {
         return;
     };
-    p.packed.retain(|x| *x != med_id);
+    p.done.retain(|x| *x != (med_id, slot));
     if packed {
-        p.packed.push(med_id);
+        p.done.push((med_id, slot));
     }
 }
 
-/// Closes the session: packed medicines come out of stock and spare halves carry over.
+/// Closes the session: packed rows come out of stock and spare halves carry over.
 pub fn finish_packing(data: &mut Data, today: NaiveDate) -> Option<PackRecord> {
     let packing = data.packing.take()?;
     let mut packed = 0;
@@ -219,11 +260,24 @@ pub fn finish_packing(data: &mut Data, today: NaiveDate) -> Option<PackRecord> {
         let Some(med) = data.med_mut(id) else {
             continue;
         };
-        if !packing.packed.contains(&id) {
+        // Only active medicines (a dose on at least one day) get here, so `due` matches the steps.
+        let due: Vec<Slot> = Slot::ALL
+            .into_iter()
+            .filter(|s| med.dose_halves(*s) > 0)
+            .collect();
+        let packed_slots: Vec<Slot> = due
+            .iter()
+            .copied()
+            .filter(|s| packing.is_done(id, *s))
+            .collect();
+        if packed_slots.is_empty() {
             skipped.push(med.display_name());
             continue;
         }
-        let line = PackLine::for_med(med);
+        for s in due.iter().filter(|s| !packed_slots.contains(s)) {
+            skipped.push(format!("{} ({})", med.display_name(), s.label().to_lowercase()));
+        }
+        let line = PackLine::for_slots(med, &packed_slots);
         if let Some(stock) = med.stock.as_mut() {
             *stock = stock.saturating_sub(line.take);
         }

@@ -1,4 +1,5 @@
-//! The weekly packing flow: start a week, tick medicines off one by one, check the organiser.
+//! The weekly packing flow: start a week, fill the morning row then the night row one
+//! medicine at a time, check the organiser.
 
 use std::time::Duration;
 
@@ -6,12 +7,12 @@ use chrono::Days;
 use leptos::leptos_dom::helpers::set_timeout;
 use leptos::prelude::*;
 use meds_core::{
-    compartment_pieces, finish_packing, next_week, order_reason, set_packed, short_for_week,
-    start_packing, week_plan, OrderState, PackLine, Slot,
+    compartment_pieces, finish_packing, next_week, order_reason, pack_step, pack_steps, set_packed,
+    short_for_week, start_packing, week_plan, OrderState, PackLine, Slot, EVERY_DAY,
 };
 
-use crate::ui::{Icon, PillDot, Segmented};
-use crate::{fmt, store, use_app, Tab};
+use crate::ui::{Icon, PillDot};
+use crate::{fmt, store, use_app, AppState, Tab};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Stage {
@@ -20,9 +21,10 @@ enum Stage {
     Packing,
 }
 
+/// What the packing screen shows: one organiser row to fill, or the whole organiser to check.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    Pack,
+enum View {
+    Row(Slot),
     Check,
 }
 
@@ -62,7 +64,7 @@ fn Welcome() -> impl IntoView {
             </div>
             <h1>"Pack the week in minutes"</h1>
             <p class="muted">
-                "Add each medicine once. Every week the app walks you through the pill organiser one medicine at a time, works out the half tablets, and keeps a running list of what to order."
+                "Add each medicine once. Every week the app walks you through the organiser's morning row, then the night row, one medicine at a time. It works out the half tablets and keeps a running list of what to order."
             </p>
             <div class="welcome-actions">
                 <button class="btn primary big" on:click=move |_| app.add_medicine()>
@@ -241,49 +243,71 @@ fn Recent() -> impl IntoView {
 #[component]
 fn Packing() -> impl IntoView {
     let app = use_app();
-    let mode = RwSignal::new(Mode::Pack);
-    let plan = Memo::new(move |_| app.data.with(week_plan));
-    let packed_ids = Memo::new(move |_| {
-        app.data
-            .with(|d| d.packing.as_ref().map(|p| p.packed.clone()).unwrap_or_default())
-    });
-    let todo = Memo::new(move |_| {
-        let packed = packed_ids.get();
-        plan.with(|p| {
-            p.iter()
-                .map(|l| l.med_id)
-                .filter(|id| !packed.contains(id))
-                .collect::<Vec<_>>()
-        })
-    });
+    let steps = Memo::new(move |_| app.data.with(pack_steps));
     let done = Memo::new(move |_| {
-        let packed = packed_ids.get();
-        plan.with(|p| {
-            p.iter()
-                .map(|l| l.med_id)
-                .filter(|id| packed.contains(id))
-                .collect::<Vec<_>>()
-        })
+        app.data
+            .with(|d| d.packing.as_ref().map(|p| p.done.clone()).unwrap_or_default())
     });
-    let total = move || plan.with(|p| p.len());
-    let done_n = move || done.with(|d| d.len());
+    // Medicine ids in each row, in packing order, split by whether they're in yet.
+    let row_ids = move |slot: Slot, packed: bool| {
+        Memo::new(move |_| {
+            let done = done.get();
+            steps.with(|s| {
+                s.iter()
+                    .filter(|x| x.slot == slot && done.contains(&(x.med_id, slot)) == packed)
+                    .map(|x| x.med_id)
+                    .collect::<Vec<_>>()
+            })
+        })
+    };
+    let todo = [row_ids(Slot::Morning, false), row_ids(Slot::Night, false)];
+    let packed = [row_ids(Slot::Morning, true), row_ids(Slot::Night, true)];
+    let left = move || todo[0].with(|t| t.len()) + todo[1].with(|t| t.len());
     let week_of = move || {
         app.data
             .with(|d| d.packing.as_ref().map(|p| p.week_of))
             .unwrap_or_else(|| app.today.get())
     };
 
+    let morning_left = todo[0].with_untracked(|t| !t.is_empty());
+    let view = RwSignal::new(View::Row(if morning_left { Slot::Morning } else { Slot::Night }));
+    // Tapping the tab you're on keeps the row as it is, including a medicine picked from it.
+    let show = move |v: View| {
+        if view.get_untracked() != v {
+            view.set(v);
+        }
+    };
+    // Once the last morning medicine is in, carry straight on with the night row.
+    Effect::new(move |prev: Option<usize>| {
+        let n = todo[0].with(|t| t.len());
+        if prev.is_some_and(|p| p > 0)
+            && n == 0
+            && view.get_untracked() == View::Row(Slot::Morning)
+            && todo[1].with_untracked(|t| !t.is_empty())
+        {
+            view.set(View::Row(Slot::Night));
+            crate::ui::scroll_to_top();
+            app.notify("Morning row done. On to the night row.", None);
+        }
+        n
+    });
+
     let finish = move || {
-        let left: Vec<String> = app.data.with_untracked(|d| {
-            todo.get_untracked()
-                .iter()
-                .filter_map(|id| d.med(*id).map(|m| m.display_name()))
+        let missing: Vec<String> = app.data.with_untracked(|d| {
+            Slot::ALL
+                .into_iter()
+                .flat_map(|s| {
+                    todo[s.index()]
+                        .get_untracked()
+                        .into_iter()
+                        .filter_map(move |id| d.med(id).map(|m| format!("{} ({})", m.display_name(), s.label().to_lowercase())))
+                })
                 .collect()
         });
-        if !left.is_empty()
+        if !missing.is_empty()
             && !store::confirm(&format!(
-                "Not packed yet: {}.\n\nFinish anyway? Only packed medicines come out of stock.",
-                left.join(", ")
+                "Not packed yet: {}.\n\nFinish anyway? Only packed rows come out of stock.",
+                missing.join(", ")
             ))
         {
             return;
@@ -309,139 +333,249 @@ fn Packing() -> impl IntoView {
                 </div>
                 <button class="btn ghost small" on:click=cancel>"Cancel"</button>
             </div>
-            <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax=total aria-valuenow=done_n>
-                <span
-                    class="progress-fill"
-                    style=move || format!("--p:{}", if total() == 0 { 1.0 } else { done_n() as f64 / total() as f64 })
-                ></span>
-            </div>
-            <div class="pack-meta">
-                <span>
-                    <strong>{done_n}</strong>
-                    " of "
-                    {total}
-                    " packed"
-                </span>
-                <Segmented
-                    options=vec![(Mode::Pack, "One by one"), (Mode::Check, "Check organiser")]
-                    value=mode
-                    on_change=Callback::new(move |m| mode.set(m))
-                    label="View"
-                />
+            <div class="row-tabs" role="group" aria-label="Organiser row">
+                {Slot::ALL
+                    .into_iter()
+                    .map(|s| {
+                        let i = s.index();
+                        let n_done = move || packed[i].with(|p| p.len());
+                        let n_all = move || n_done() + todo[i].with(|t| t.len());
+                        let icon = if s == Slot::Morning { "sun" } else { "moon" };
+                        view! {
+                            <button
+                                class="row-tab"
+                                class:night={s == Slot::Night}
+                                class:active=move || view.get() == View::Row(s)
+                                class:complete=move || { n_all() > 0 && n_done() == n_all() }
+                                aria-pressed=move || (view.get() == View::Row(s)).to_string()
+                                on:click=move |_| show(View::Row(s))
+                            >
+                                <span class="rt-top">
+                                    <Icon name=icon/>
+                                    <span class="rt-label">{s.label()}</span>
+                                    <span class="rt-count">{n_done} "/" {n_all}</span>
+                                </span>
+                                <span class="rt-bar" aria-hidden="true">
+                                    <span style=move || {
+                                        let all = n_all();
+                                        format!("--p:{}", if all == 0 { 1.0 } else { n_done() as f64 / all as f64 })
+                                    }></span>
+                                </span>
+                            </button>
+                        }
+                    })
+                    .collect_view()}
+                <button
+                    class="row-tab check"
+                    class:active=move || view.get() == View::Check
+                    aria-pressed=move || (view.get() == View::Check).to_string()
+                    aria-label="Check the organiser"
+                    on:click=move |_| show(View::Check)
+                >
+                    <span class="rt-top">
+                        <Icon name="grid"/>
+                        <span class="rt-label">"Check"</span>
+                    </span>
+                </button>
             </div>
         </section>
 
-        {move || match mode.get() {
-            Mode::Pack => {
+        {move || match view.get() {
+            View::Row(s) => {
+                let i = s.index();
+                let other = s.other();
+                let other_left = Signal::derive(move || todo[other.index()].with(|t| t.len()));
                 view! {
-                    <Show when=move || todo.with(|t| t.is_empty())>
-                        <div class="all-done reveal">
-                            <span class="done-mark">
-                                <Icon name="check"/>
-                            </span>
-                            <h2>"Everything's in the organiser"</h2>
-                            <p class="muted">"Have a quick look in Check organiser, then finish the week."</p>
-                        </div>
-                    </Show>
-                    <div class="pack-list">
-                        <For each=move || todo.get() key=|id| *id let:id>
-                            <PackCard id=id/>
-                        </For>
-                    </div>
-                    <Show when=move || !done.with(|d| d.is_empty())>
-                        <section class="packed-list">
-                            <h3 class="section-label">{move || format!("Packed · {}", done_n())}</h3>
-                            <div class="chips-wrap">
-                                <For each=move || done.get() key=|id| *id let:id>
-                                    <PackedChip id=id/>
-                                </For>
-                            </div>
-                        </section>
-                    </Show>
+                    <RowSteps
+                        row=s
+                        todo=todo[i]
+                        packed=packed[i]
+                        other_left=other_left
+                        go_other=Callback::new(move |_| {
+                            view.set(View::Row(other));
+                            crate::ui::scroll_to_top();
+                        })
+                    />
                 }
                     .into_any()
             }
-            Mode::Check => view! { <Organiser/> }.into_any(),
+            View::Check => view! { <Organiser/> }.into_any(),
         }}
 
-        <div class="finish-bar">
-            <button class="btn big" class:primary=move || todo.with(|t| t.is_empty()) on:click=move |_| finish()>
+        <div class="finish-bar" class:ready=move || left() == 0>
+            <button class="btn big" class:primary=move || left() == 0 on:click=move |_| finish()>
                 <Icon name="check"/>
-                {move || {
-                    let left = todo.with(|t| t.len());
-                    if left == 0 { "Finish week".to_string() } else { format!("Finish week ({left} left)") }
+                {move || match left() {
+                    0 => "Finish week".to_string(),
+                    n => format!("Finish week ({n} left)"),
                 }}
             </button>
         </div>
     }
 }
 
+/// One row of the organiser: the medicine to put in now, then the rest of the row.
 #[component]
-fn PackCard(id: u32) -> impl IntoView {
+fn RowSteps(
+    row: Slot,
+    todo: Memo<Vec<u32>>,
+    packed: Memo<Vec<u32>>,
+    other_left: Signal<usize>,
+    go_other: Callback<()>,
+) -> impl IntoView {
+    // A medicine picked from "Up next"; otherwise the first one left in the row.
+    let picked = RwSignal::new(None::<u32>);
+    let current = Memo::new(move |_| {
+        let p = picked.get();
+        todo.with(|t| p.filter(|id| t.contains(id)).or_else(|| t.first().copied()))
+    });
+    // Once the picked one is in, go back to following the row in order.
+    Effect::new(move |_| {
+        if let Some(id) = picked.get() {
+            if !todo.with(|t| t.contains(&id)) {
+                picked.set(None);
+            }
+        }
+    });
+    let rest = Memo::new(move |_| {
+        let c = current.get();
+        todo.with(|t| t.iter().copied().filter(|id| Some(*id) != c).collect::<Vec<_>>())
+    });
+    let focus_ref = NodeRef::<leptos::html::Div>::new();
+    let pick = Callback::new(move |id: u32| {
+        picked.set(Some(id));
+        if let Some(el) = focus_ref.get_untracked() {
+            el.scroll_into_view_with_bool(true);
+        }
+    });
+    view! {
+        <Show when=move || todo.with(|t| t.is_empty())>
+            {move || {
+                    if other_left.get() > 0 {
+                        let (other, icon) = match row {
+                            Slot::Morning => ("night", "moon"),
+                            Slot::Night => ("morning", "sun"),
+                        };
+                        view! {
+                            <div class="all-done reveal">
+                                <span class="done-mark">
+                                    <Icon name="check"/>
+                                </span>
+                                <h2>{format!("{} row done", row.label())}</h2>
+                                <p class="muted">
+                                    {format!("{} still to go in the {other} row.", fmt::plural(other_left.get() as u32, "medicine", "medicines"))}
+                                </p>
+                                <button class="btn primary big" on:click=move |_| go_other.run(())>
+                                    <Icon name=icon/>
+                                    {format!("Go to the {other} row")}
+                                </button>
+                            </div>
+                        }
+                            .into_any()
+                    } else {
+                        view! {
+                            <div class="all-done reveal">
+                                <span class="done-mark">
+                                    <Icon name="check"/>
+                                </span>
+                                <h2>{format!("The {} row is done", row.label().to_lowercase())}</h2>
+                                <p class="muted">"Have a quick look in Check, then finish the week."</p>
+                            </div>
+                        }
+                            .into_any()
+                    }
+                }}
+        </Show>
+        <div class="step-focus" node_ref=focus_ref>
+            {move || current.get().map(|id| view! { <StepCard id=id row=row/> })}
+        </div>
+        <Show when=move || !rest.with(|r| r.is_empty())>
+            <section class="up-next">
+                <h3 class="section-label">{move || format!("Up next · {}", rest.with(|r| r.len()))}</h3>
+                <div class="step-rows">
+                    <For each=move || rest.get() key=|id| *id let:id>
+                        <StepRow id=id row=row on_pick=pick/>
+                    </For>
+                </div>
+            </section>
+        </Show>
+        <Show when=move || !packed.with(|p| p.is_empty())>
+            <section class="packed-list">
+                <h3 class="section-label">{move || format!("In the {} row · {}", row.label().to_lowercase(), packed.with(|p| p.len()))}</h3>
+                <div class="chips-wrap">
+                    <For each=move || packed.get() key=|id| *id let:id>
+                        <PackedChip id=id row=row/>
+                    </For>
+                </div>
+            </section>
+        </Show>
+    }
+}
+
+/// Marks a step packed after a short exit animation.
+fn pack_later(app: AppState, id: u32, row: Slot, leaving: RwSignal<bool>) {
+    if leaving.get_untracked() {
+        return;
+    }
+    store::tick();
+    leaving.set(true);
+    let delay = if store::prefers_reduced_motion() { 0 } else { 240 };
+    set_timeout(
+        move || app.data.update(|d| set_packed(d, id, row, true)),
+        Duration::from_millis(delay),
+    );
+}
+
+/// Half tablets in each compartment of this row, and the weekdays that get them.
+fn row_dose(line: &PackLine, row: Slot) -> (u32, u8) {
+    let days = line.slot_days(row);
+    let per = days.first().map(|d| line.grid[row.index()][*d]).unwrap_or(0);
+    let mask = days.iter().fold(0u8, |m, d| m | (1 << d));
+    (per, mask)
+}
+
+/// The medicine to put in right now, with everything needed to do it.
+#[component]
+fn StepCard(id: u32, row: Slot) -> impl IntoView {
     let app = use_app();
     let med = Memo::new(move |_| app.data.with(|d| d.med(id).cloned()));
-    let line = Memo::new(move |_| med.with(|m| m.as_ref().map(PackLine::for_med)));
+    let other_done = Memo::new(move |_| app.data.with(|d| d.row_done(id, row.other())));
     let leaving = RwSignal::new(false);
-
-    let pack = move || {
-        if leaving.get_untracked() {
-            return;
-        }
-        store::tick();
-        leaving.set(true);
-        let delay = if store::prefers_reduced_motion() { 0 } else { 260 };
-        set_timeout(
-            move || app.data.update(|d| set_packed(d, id, true)),
-            Duration::from_millis(delay),
-        );
-    };
-
-    let low_days = move || app.data.with(|d| d.settings.low_days);
-    let order = move || med.with(|m| m.as_ref().map(|m| (m.order, order_reason(m, low_days()))));
-    let toggle_flag = move |_| {
-        app.data.update(|d| {
-            if let Some(m) = d.med_mut(id) {
-                m.order = match m.order {
-                    OrderState::Needed => OrderState::None,
-                    _ => OrderState::Needed,
-                };
-                m.ordered_on = None;
-            }
-        })
-    };
 
     view! {
         {move || {
-            let (Some(m), Some(l)) = (med.get(), line.get()) else {
+            let Some(m) = med.get() else {
                 return ().into_any();
             };
-            let colour = m.colour;
-            let slots = Slot::ALL
-                .into_iter()
-                .filter_map(|s| fmt::slot_instruction(&l, s).map(|t| (s, t)))
-                .map(|(s, text)| {
-                    let icon = if s == Slot::Morning { "sun" } else { "moon" };
-                    view! {
-                        <div class="pc-slot" class:night={s == Slot::Night}>
-                            <Icon name=icon/>
-                            <span class="pc-slot-label">{s.label()}</span>
-                            <strong>{text}</strong>
-                        </div>
-                    }
-                })
-                .collect_view();
-            let grid = (!m.is_daily()).then(|| view! { <MiniGrid line=l.clone()/> });
+            let l = pack_step(&m, row, other_done.get()).line;
+            let week = PackLine::for_med(&m);
+            let (per, mask) = row_dose(&l, row);
+            let daily = mask == EVERY_DAY;
+            let unit = if per <= 2 { "tablet" } else { "tablets" };
+            let caption = if daily {
+                format!("{unit} in every compartment")
+            } else {
+                format!("{unit} · {}", fmt::days(mask))
+            };
+            let strip = (!daily).then(|| view! { <DayStrip line=l.clone() row=row/> });
             let halves = (l.cut > 0 || l.use_spare > 0)
                 .then(|| {
                     let mut parts = Vec::new();
                     if l.use_spare > 0 {
-                        parts.push(format!("use {} spare from last week", fmt::plural(l.use_spare, "half", "halves")));
+                        parts.push(format!("use {} you already have", fmt::plural(l.use_spare, "spare half", "spare halves")));
                     }
                     if l.cut > 0 {
                         parts.push(format!("cut {} in half", fmt::plural(l.cut, "tablet", "tablets")));
                     }
                     if l.spare_after > 0 {
-                        parts.push(format!("keep {} for next week", fmt::plural(l.spare_after, "half", "halves")));
+                        // An odd number of halves in the other row, still to pack, uses it up.
+                        let other = row.other();
+                        let when = if m.dose_halves(other) % 2 == 1 && !other_done.get() {
+                            format!("the {} row", other.label().to_lowercase())
+                        } else {
+                            "next week".to_string()
+                        };
+                        parts.push(format!("keep {} for {when}", fmt::plural(l.spare_after, "half", "halves")));
                     }
                     let mut text = parts.join(", ");
                     if let Some(c) = text.get_mut(0..1) {
@@ -457,78 +591,59 @@ fn PackCard(id: u32) -> impl IntoView {
             let stock = m
                 .stock
                 .map(|s| {
-                    let after = s.saturating_sub(l.take);
-                    if l.take > s {
+                    if week.take > s {
                         view! {
                             <p class="pc-stock bad">
                                 <Icon name="alert"/>
-                                {format!("Only {s} in the box, {} short", l.take - s)}
+                                {format!("Only {s} in the box, {} short this week", week.take - s)}
                             </p>
                         }
                             .into_any()
                     } else {
+                        let take = match l.take {
+                            0 => "Nothing new from the box".to_string(),
+                            n => format!("Take {n} from the box"),
+                        };
                         view! {
                             <p class="pc-stock">
                                 <Icon name="box"/>
-                                {format!("Take {} · {after} left after", l.take)}
+                                {format!("{take} · {} left after this week", s - week.take)}
                             </p>
                         }
                             .into_any()
                     }
                 });
             let note = (!m.note.trim().is_empty()).then(|| view! { <p class="pc-note">{m.note.clone()}</p> });
-            let strength = m.strength.clone();
+            let icon = if row == Slot::Morning { "sun" } else { "moon" };
             view! {
                 <article class="pack-card" class:leaving=move || leaving.get()>
                     <div class="pc-top">
-                        <PillDot colour=colour/>
+                        <PillDot colour=m.colour/>
                         <h3 class="pc-name">
                             {m.name.clone()}
-                            <span class="pc-strength">{strength}</span>
+                            <span class="pc-strength">{m.strength.clone()}</span>
                         </h3>
-                        {move || {
-                            let (state, reason) = order().unwrap_or((OrderState::None, None));
-                            // Ordered and automatic low-stock flags are status, not toggles.
-                            let status = match (state, reason) {
-                                (OrderState::Ordered, _) => Some("Ordered"),
-                                (OrderState::None, Some(_)) => Some("Low stock"),
-                                _ => None,
-                            };
-                            if let Some(label) = status {
-                                return view! {
-                                    <span class="flag-chip on static">
-                                        <Icon name="flag"/>
-                                        {label}
-                                    </span>
-                                }
-                                    .into_any();
-                            }
-                            let on = state == OrderState::Needed;
-                            let label = if on { "To order" } else { "Running low?" };
-                            view! {
-                                <button
-                                    class="flag-chip"
-                                    class:on=on
-                                    aria-pressed=on.to_string()
-                                    title="Add to the order list"
-                                    on:click=toggle_flag
-                                >
-                                    <Icon name="flag"/>
-                                    {label}
-                                </button>
-                            }
-                                .into_any()
-                        }}
+                        <FlagChip id=id/>
                     </div>
-                    <div class="pc-slots">{slots}</div>
-                    {grid}
+                    <div class="step-dose" class:night={row == Slot::Night}>
+                        <span class="sd-row">
+                            <Icon name=icon/>
+                            {format!("{} row", row.label())}
+                        </span>
+                        <span class="sd-amount">
+                            <strong>{fmt::halves(per)}</strong>
+                            <span>{caption}</span>
+                        </span>
+                    </div>
+                    {strip}
                     {halves}
-                    {stock}
-                    {note}
-                    <button class="btn big primary pack-btn" on:click=move |_| pack()>
+                    // The button comes before stock and notes so it stays in reach on small phones.
+                    <button class="btn big primary pack-btn" on:click=move |_| pack_later(app, id, row, leaving)>
                         <Icon name="check"/>
                         "Packed"
                     </button>
+                    {stock}
+                    {note}
                 </article>
             }
                 .into_any()
@@ -536,33 +651,129 @@ fn PackCard(id: u32) -> impl IntoView {
     }
 }
 
-/// A 7 × 2 picture of the organiser showing which compartments a medicine goes in.
+/// "Running low?" toggle, or the order status when it isn't the user's to toggle.
 #[component]
-fn MiniGrid(line: PackLine) -> impl IntoView {
+fn FlagChip(id: u32) -> impl IntoView {
+    let app = use_app();
+    let order = Memo::new(move |_| {
+        app.data.with(|d| {
+            d.med(id)
+                .map(|m| (m.order, order_reason(m, d.settings.low_days)))
+                .unwrap_or((OrderState::None, None))
+        })
+    });
+    let toggle_flag = move |_| {
+        app.data.update(|d| {
+            if let Some(m) = d.med_mut(id) {
+                m.order = match m.order {
+                    OrderState::Needed => OrderState::None,
+                    _ => OrderState::Needed,
+                };
+                m.ordered_on = None;
+            }
+        })
+    };
+    move || {
+        let (state, reason) = order.get();
+        // Ordered and automatic low-stock flags are status, not toggles.
+        let status = match (state, reason) {
+            (OrderState::Ordered, _) => Some("Ordered"),
+            (OrderState::None, Some(_)) => Some("Low stock"),
+            _ => None,
+        };
+        if let Some(label) = status {
+            return view! {
+                <span class="flag-chip on static">
+                    <Icon name="flag"/>
+                    {label}
+                </span>
+            }
+                .into_any();
+        }
+        let on = state == OrderState::Needed;
+        let label = if on { "To order" } else { "Running low?" };
+        view! {
+            <button
+                class="flag-chip"
+                class:on=on
+                aria-pressed=on.to_string()
+                title="Add to the order list"
+                on:click=toggle_flag
+            >
+                <Icon name="flag"/>
+                {label}
+            </button>
+        }
+            .into_any()
+    }
+}
+
+/// The week along one row of the organiser, with the dose in the days that get it.
+#[component]
+fn DayStrip(line: PackLine, row: Slot) -> impl IntoView {
+    let cells = line.grid[row.index()];
     view! {
-        <div class="mini-grid" aria-hidden="true">
-            {fmt::DAY_LETTERS.iter().map(|d| view! { <span class="mg-head">{*d}</span> }).collect_view()}
-            {Slot::ALL
+        <div class="day-strip" class:night={row == Slot::Night} aria-hidden="true">
+            {cells
                 .into_iter()
-                .flat_map(|s| {
-                    let row = line.grid[s.index()];
-                    row.into_iter()
-                        .map(move |h| {
-                            view! {
-                                <span class="mg-cell" class:on={h > 0} class:night={s == Slot::Night}>
-                                    {(h > 0).then(|| fmt::halves(h))}
-                                </span>
-                            }
-                        })
-                        .collect::<Vec<_>>()
+                .enumerate()
+                .map(|(d, h)| {
+                    view! {
+                        <span class="ds-cell" class:on={h > 0}>
+                            <span class="ds-day">{fmt::DAY_LETTERS[d]}</span>
+                            <span class="ds-n">{if h > 0 { fmt::halves(h) } else { "–".into() }}</span>
+                        </span>
+                    }
                 })
                 .collect_view()}
         </div>
     }
 }
 
+/// A medicine further down the row: tap the name to open it, or the tick if it's already in.
 #[component]
-fn PackedChip(id: u32) -> impl IntoView {
+fn StepRow(id: u32, row: Slot, on_pick: Callback<u32>) -> impl IntoView {
+    let app = use_app();
+    let info = Memo::new(move |_| {
+        app.data.with(|d| {
+            d.med(id).map(|m| {
+                let (per, mask) = row_dose(&pack_step(m, row, d.row_done(id, row.other())).line, row);
+                let when = (mask != EVERY_DAY).then(|| fmt::days(mask));
+                (m.colour, m.name.clone(), m.strength.clone(), per, when)
+            })
+        })
+    });
+    let leaving = RwSignal::new(false);
+    move || {
+        info.get().map(|(colour, name, strength, per, when)| {
+            view! {
+                <div class="step-row" class:leaving=move || leaving.get()>
+                    <button class="sr-main" on:click=move |_| on_pick.run(id)>
+                        <PillDot colour=colour/>
+                        <span class="sr-name">
+                            {name.clone()}
+                            <span class="sr-strength">{strength.clone()}</span>
+                        </span>
+                        <span class="sr-dose" class:night={row == Slot::Night}>
+                            {fmt::halves(per)}
+                            {when.clone().map(|w| view! { <small>{w}</small> })}
+                        </span>
+                    </button>
+                    <button
+                        class="sr-tick"
+                        aria-label=format!("Mark {name} packed in the {} row", row.label().to_lowercase())
+                        on:click=move |_| pack_later(app, id, row, leaving)
+                    >
+                        <Icon name="check"/>
+                    </button>
+                </div>
+            }
+        })
+    }
+}
+
+#[component]
+fn PackedChip(id: u32, row: Slot) -> impl IntoView {
     let app = use_app();
     let med = Memo::new(move |_| app.data.with(|d| d.med(id).map(|m| (m.colour, m.display_name()))));
     view! {
@@ -573,7 +784,7 @@ fn PackedChip(id: u32) -> impl IntoView {
                         <button
                             class="packed-chip"
                             title="Tap to put back on the list"
-                            on:click=move |_| app.data.update(|d| set_packed(d, id, false))
+                            on:click=move |_| app.data.update(|d| set_packed(d, id, row, false))
                         >
                             <PillDot colour=colour/>
                             <span>{name}</span>

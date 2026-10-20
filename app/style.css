@@ -779,38 +779,94 @@ button {
   font-weight: 720;
   letter-spacing: -0.03em;
 }
-.progress {
-  height: 8px;
-  margin: 12px 0 10px;
+
+/* Row tabs: morning, night, check, each with its own progress. */
+.row-tabs {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  margin-top: 12px;
+}
+.row-tab {
+  --tint: var(--morning);
+  --tint-soft: var(--morning-soft);
+  display: grid;
+  gap: 7px;
+  padding: 9px 12px 10px;
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line);
+  text-align: left;
+  color: var(--ink-2);
+  transition: background 0.2s, box-shadow 0.2s, color 0.2s;
+}
+.row-tab.night {
+  --tint: var(--night);
+  --tint-soft: var(--night-soft);
+}
+.row-tab.active {
+  color: var(--ink);
+  background: var(--tint-soft);
+  box-shadow: inset 0 0 0 2px var(--tint);
+}
+.row-tab.check {
+  --tint: var(--accent);
+  --tint-soft: var(--accent-soft);
+  align-content: center;
+}
+.rt-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 650;
+}
+.rt-top .icon {
+  width: 17px;
+  height: 17px;
+  color: var(--tint);
+  flex: none;
+}
+.rt-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rt-count {
+  flex: none;
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.row-tab.complete .rt-count {
+  color: var(--good);
+}
+.rt-bar {
+  display: block;
+  height: 5px;
   border-radius: 99px;
   background: var(--surface-3);
   overflow: hidden;
 }
-.progress-fill {
+.rt-bar span {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--hero-a), var(--accent));
+  background: var(--tint);
   transform-origin: left;
   transform: scaleX(var(--p));
   transition: transform 0.5s var(--spring);
 }
-.pack-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  font-size: 14px;
-  color: var(--ink-2);
-}
-.pack-meta strong {
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
-}
 
-.pack-list {
-  display: grid;
-  gap: 12px;
+.step-focus {
+  scroll-margin-top: 210px;
+}
+.step-focus:empty {
+  display: none;
 }
 .pack-card {
   display: grid;
@@ -826,8 +882,171 @@ button {
   transform: translateX(28px) scale(0.97);
   opacity: 0;
 }
-.pack-list .pack-card:first-child {
+.step-focus .pack-card {
   box-shadow: 0 0 0 2px color-mix(in oklab, var(--accent) 55%, transparent), var(--shadow);
+}
+.step-dose {
+  display: grid;
+  gap: 2px;
+  padding: 12px 14px 13px;
+  border-radius: 15px;
+  background: var(--morning-soft);
+}
+.step-dose.night {
+  background: var(--night-soft);
+}
+.sd-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.sd-row .icon {
+  width: 16px;
+  height: 16px;
+  color: var(--morning);
+}
+.step-dose.night .sd-row .icon {
+  color: var(--night);
+}
+.sd-amount {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.sd-amount strong {
+  font-size: 44px;
+  line-height: 1.05;
+  font-weight: 760;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+}
+.sd-amount span {
+  font-size: 15px;
+  font-weight: 560;
+  color: var(--ink-2);
+}
+.day-strip {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 5px;
+}
+.ds-cell {
+  display: grid;
+  justify-items: center;
+  gap: 1px;
+  padding: 6px 0 7px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+.ds-cell.on {
+  color: var(--ink);
+  background: var(--morning-soft);
+  box-shadow: inset 0 0 0 1.5px var(--morning);
+}
+.day-strip.night .ds-cell.on {
+  background: var(--night-soft);
+  box-shadow: inset 0 0 0 1.5px var(--night);
+}
+.ds-day {
+  font-size: 11px;
+  font-weight: 650;
+}
+.ds-n {
+  font-size: 15px;
+  font-weight: 720;
+}
+
+/* The rest of the row: open one, or tick it straight off. */
+.step-rows {
+  display: grid;
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--line), var(--shadow-sm);
+  overflow: hidden;
+}
+.step-row {
+  display: flex;
+  align-items: center;
+  border-top: 1px solid var(--line);
+  transition: transform 0.24s var(--ease), opacity 0.24s var(--ease);
+}
+.step-row:first-child {
+  border-top: none;
+}
+.step-row.leaving {
+  transform: translateX(24px);
+  opacity: 0;
+}
+.sr-main {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  flex: 1;
+  min-width: 0;
+  min-height: 56px;
+  padding: 8px 4px 8px 14px;
+  text-align: left;
+}
+.sr-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15.5px;
+  font-weight: 620;
+}
+.sr-strength {
+  margin-left: 6px;
+  font-size: 13.5px;
+  font-weight: 520;
+  color: var(--muted);
+}
+.sr-dose {
+  display: grid;
+  justify-items: end;
+  flex: none;
+  font-size: 18px;
+  font-weight: 740;
+  color: var(--morning);
+  font-variant-numeric: tabular-nums;
+}
+.sr-dose.night {
+  color: var(--night);
+}
+.sr-dose small {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.sr-tick {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  margin: 0 8px 0 6px;
+  border-radius: 50%;
+  color: var(--muted);
+  box-shadow: inset 0 0 0 1.5px var(--line-strong);
+  transition: background 0.2s, color 0.2s, box-shadow 0.2s;
+}
+.sr-tick .icon {
+  width: 20px;
+  height: 20px;
+}
+.sr-tick:hover,
+.sr-tick:active {
+  color: #fff;
+  background: var(--accent);
+  box-shadow: none;
 }
 .pc-top {
   display: flex;
@@ -874,37 +1093,6 @@ button {
 .flag-chip.static {
   cursor: default;
 }
-.pc-slots {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
-  gap: 8px;
-}
-.pc-slot {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  border-radius: 13px;
-  background: var(--morning-soft);
-  font-size: 14px;
-}
-.pc-slot .icon {
-  color: var(--morning);
-}
-.pc-slot.night {
-  background: var(--night-soft);
-}
-.pc-slot.night .icon {
-  color: var(--night);
-}
-.pc-slot-label {
-  color: var(--ink-2);
-}
-.pc-slot strong {
-  margin-left: auto;
-  font-size: 16px;
-  font-weight: 700;
-}
 .pc-cut,
 .pc-stock,
 .pc-note {
@@ -941,35 +1129,6 @@ button {
   margin-top: 4px;
 }
 
-.mini-grid {
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 4px;
-  max-width: 340px;
-}
-.mg-head {
-  text-align: center;
-  font-size: 11px;
-  font-weight: 650;
-  color: var(--muted);
-}
-.mg-cell {
-  display: grid;
-  place-items: center;
-  height: 26px;
-  border-radius: 7px;
-  background: var(--surface-2);
-  font-size: 12.5px;
-  font-weight: 700;
-}
-.mg-cell.on {
-  background: var(--morning-soft);
-  box-shadow: inset 0 0 0 1.5px var(--morning);
-}
-.mg-cell.night.on {
-  background: var(--night-soft);
-  box-shadow: inset 0 0 0 1.5px var(--night);
-}
 
 .all-done {
   display: flex;
@@ -1034,17 +1193,14 @@ button {
   color: var(--accent);
 }
 
+/* Stays out of the way while packing, then sticks in reach once everything is in. */
 .finish-bar {
+  margin-top: 26px;
+}
+.finish-bar.ready {
   position: sticky;
   bottom: 16px;
   z-index: 5;
-  margin-top: 22px;
-}
-.finish-bar .btn:not(.primary) {
-  background: color-mix(in oklab, var(--surface) 92%, transparent);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  box-shadow: inset 0 0 0 1px var(--line-strong), var(--shadow-lg);
 }
 
 /* Organiser check */
@@ -1639,6 +1795,8 @@ button.med-row:hover {
 /* ───────────────────────── Phone layout ───────────────────────── */
 @media (max-width: 720px) {
   .shell {
+    /* Height of the top bar below, so the packing head can pin under it. */
+    --topbar-h: calc(46px + max(10px, env(safe-area-inset-top)));
     padding: 0 16px calc(100px + env(safe-area-inset-bottom));
   }
   .topbar {
@@ -1688,17 +1846,31 @@ button.med-row:hover {
     box-shadow: 0 0 0 2px var(--surface);
   }
   .pack-head {
-    position: static;
-    margin: 0 0 6px;
-    padding: 4px 0 12px;
+    top: var(--topbar-h);
+    margin: 0 -16px 6px;
+    padding: 2px 16px 12px;
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
-    background: none;
+    background: var(--bg);
+    box-shadow: 0 1px 0 var(--line);
   }
   .pack-title h1 {
-    font-size: 21px;
+    font-size: 19px;
   }
-  .finish-bar {
+  .pack-title .btn.small {
+    margin-top: 2px;
+  }
+  .row-tabs {
+    margin-top: 10px;
+    gap: 6px;
+  }
+  .row-tab {
+    padding: 8px 10px 9px;
+  }
+  .step-focus {
+    scroll-margin-top: calc(var(--topbar-h) + 150px);
+  }
+  .finish-bar.ready {
     bottom: calc(92px + env(safe-area-inset-bottom));
   }
   .toast-host {
@@ -1758,16 +1930,38 @@ button.med-row:hover {
   }
 }
 @media (max-width: 420px) {
-  .pack-meta {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 8px;
+  /* The Check tab shrinks to its icon so both rows keep room for their counts. */
+  .row-tab {
+    padding-inline: 9px;
+  }
+  .rt-top {
+    gap: 5px;
+    font-size: 13.5px;
+  }
+  .row-tab.check .rt-label {
+    display: none;
+  }
+  .row-tab.check .rt-top {
+    justify-content: center;
+  }
+  .row-tab.check .rt-top .icon {
+    width: 20px;
+    height: 20px;
+  }
+  .row-tab.check {
+    min-width: 46px;
   }
   .pc-name {
     font-size: 17.5px;
   }
   .form-row.two {
     grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 380px) {
+  /* Narrow phones: the tab colour already says morning or night. */
+  .row-tab:not(.check) .rt-top .icon {
+    display: none;
   }
 }
 @media (prefers-reduced-motion: reduce) {
