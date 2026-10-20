@@ -1,0 +1,5 @@
+/target
+/app/dist
+.remember/
+/private/
+.playwright-mcp/

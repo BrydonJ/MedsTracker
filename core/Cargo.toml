@@ -1,0 +1,10 @@
+[package]
+name = "meds-core"
+description = "Medicine schedule, weekly packing plan and stock maths."
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
